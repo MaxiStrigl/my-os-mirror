@@ -4,10 +4,14 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use common::BootInfo;
 use core::time::Duration;
 use uefi::{
     Result,
+    boot::MemoryType,
+    mem::memory_map::MemoryMap,
     prelude::*,
+    println,
     proto::console::gop::{BltOp, BltPixel, BltRegion::Full, GraphicsOutput},
 };
 
@@ -40,21 +44,53 @@ impl Buffer {
 fn main() -> Status {
     uefi::helpers::init().unwrap();
 
-    draw_purple();
+    println!("Bootloader initialized");
+    println!("Getting Framebuffer");
 
-    Status::SUCCESS
-}
+    // Framebuffer
+    let gop_handle =
+        boot::get_handle_for_protocol::<GraphicsOutput>().expect("Failed to get gop-handle");
+    let mut gop =
+        boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle).expect("Failed to open gop");
+    let gop_info = gop.current_mode_info();
 
-fn draw_purple() -> Result {
-    let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>()?;
-    let mut gop = boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle)?;
+    let (fb_width, fb_height) = gop_info.resolution();
+    let fb_stride = gop_info.stride();
 
-    let (width, height) = gop.current_mode_info().resolution();
-    let buffer = Buffer::init_flat(width, height, BltPixel::new(0, 0, 255));
+    let mut framebuffer = gop.frame_buffer();
+    let fb_ptr = framebuffer.as_mut_ptr();
+    let fb_size = framebuffer.size();
 
-    buffer.blt(&mut gop)?;
+    // System table
+    let system_table_ptr = uefi::table::system_table_raw()
+        .expect("System table not initialized")
+        .as_ptr() as *mut u8;
+
+    // Memory map
+    println!("Getting Memory Map and booting");
+
+    let mmap = unsafe { uefi::boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
+
+    // UEFI Services are gone
+    let mmap_ptr = mmap.buffer().as_ptr();
+    let mmap_len = mmap.buffer().len();
+    let mmap_desc_size = mmap.meta().desc_size;
+
+    let boot_info = BootInfo {
+        fb_ptr,
+        fb_size,
+        fb_width,
+        fb_height,
+        fb_stride,
+
+        mmap_ptr,
+        mmap_len,
+        mmap_desc_size,
+
+        system_table_ptr,
+    };
 
     boot::stall(Duration::from_secs(10));
 
-    Ok(())
+    Status::SUCCESS
 }

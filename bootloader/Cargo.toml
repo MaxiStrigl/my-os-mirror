@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+common = { version = "0.1.0", path = "../common" }
 log = "0.4.29"
 uefi = { version = "0.37.0", features = ["alloc", "global_allocator", "logger", "panic_handler"] }
 
