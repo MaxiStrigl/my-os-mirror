@@ -1,0 +1,13 @@
+# --- Rust / Cargo ---
+/target/
+Cargo.lock
+
+# --- OS Build ---
+/esp/
+
+# --- Firmware ---
+/ovmf/
+*.fd
+
+# -- Debuggin ---
+*.log
