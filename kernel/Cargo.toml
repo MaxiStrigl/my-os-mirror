@@ -1,0 +1,11 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kernel"
+harness = false
+
+[dependencies]
+common = { version = "0.1.0", path = "../common" }

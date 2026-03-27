@@ -1,0 +1,7 @@
+SECTIONS {
+  . = 0x4000000;
+  .text : ALIGN(0x1000) { *(.text .text.*) }
+  .rodata : ALIGN(0x1000) { *(.rodata .rodata.*) }
+  .data : ALIGN(0x1000) { *(.data .data.* .got .got.*) }
+  .bss : ALIGN(0x1000) { *(.bss .bss.*) }
+}

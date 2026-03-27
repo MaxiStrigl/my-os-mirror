@@ -6,6 +6,7 @@ import sys
 ESP_DIR = "esp"
 BOOT_DIR = os.path.join(ESP_DIR, "EFI", "BOOT")
 BOOTLOADER_SRC = "target/x86_64-unknown-uefi/debug/bootloader.efi"
+KERNEL_SRC = "target/x86_64-my-os/debug/kernel"
 
 OVMF_CODE = "ovmf/OVMF_CODE.4m.fd"
 OVMF_VARS = "ovmf/OVMF_VARS.4m.fd"
@@ -19,6 +20,7 @@ def main():
 
     # Copy the bootloader to the UEFI path
     shutil.copy(BOOTLOADER_SRC, os.path.join(BOOT_DIR, "BOOTX64.EFI"))
+    shutil.copy(KERNEL_SRC, os.path.join(ESP_DIR, "kernel.elf"))
 
     # Build the QEMU command
     qemu_cmd = [

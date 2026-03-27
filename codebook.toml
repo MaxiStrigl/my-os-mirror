@@ -1,4 +1,6 @@
 words = [
     "efi",
+    "mmap",
     "ovmf",
+    "uefi",
 ]
