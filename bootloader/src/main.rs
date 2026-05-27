@@ -5,7 +5,10 @@ extern crate alloc;
 use alloc::vec;
 use common::BootInfo;
 use uefi::{
-    boot::{AllocateType, MemoryType},
+    boot::{
+        AllocateType::{self, AnyPages},
+        MemoryType,
+    },
     mem::memory_map::MemoryMap,
     prelude::*,
     println,
@@ -20,9 +23,57 @@ use xmas_elf::{
     program::{ProgramHeader, Type},
 };
 
+const PAGE_PRESENT: usize = 1;
+const PAGE_WRITEABLE: usize = 1 << 1;
+const PAGE_HUGE: usize = 1 << 7;
+const TABLE_FLAGS: usize = PAGE_WRITEABLE | PAGE_PRESENT;
+const HUGE_PAGW_FLAGS: usize = PAGE_HUGE | PAGE_WRITEABLE | PAGE_PRESENT;
+
+#[repr(C, align(4096))]
+pub struct PageTable {
+    pub entries: [usize; 512],
+}
+
+impl PageTable {
+    pub fn new() -> &'static mut Self {
+        let ptr = uefi::boot::allocate_pages(AnyPages, uefi::boot::MemoryType::LOADER_DATA, 1)
+            .expect("Failed to allocate page  table")
+            .as_ptr() as *mut PageTable;
+
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, 1);
+            &mut *ptr
+        }
+    }
+}
+
+fn setup_higher_half_paging(kernel_phys_addr: usize) {
+    let pml4 = PageTable::new();
+
+    let pdpt = PageTable::new();
+
+    pml4.entries[0] = (pdpt as *const _ as usize) | TABLE_FLAGS;
+
+    for i in 0..4 {
+        let phys_addr = i * 0x4000_0000; // 1 GiB
+        pdpt.entries[i] = phys_addr | HUGE_PAGW_FLAGS;
+    }
+
+    unsafe {
+        let pml4_addr = pml4 as *const _ as u64;
+        core::arch::asm!(
+          "mov cr3, {}",
+          in(reg) pml4_addr,
+          options(nostack, preserves_flags)
+        )
+    }
+}
+
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
+
+    setup_higher_half_paging(0);
 
     println!("Bootloader initialized");
 
