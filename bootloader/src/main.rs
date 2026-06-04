@@ -42,48 +42,84 @@ impl PageTable {
             &mut *ptr
         }
     }
+
+    /// Fetches the next level of the page table at the given index or allocates it if it does
+    pub fn get_or_create(&mut self, index: usize) -> &mut PageTable {
+        if self.entries[index] & PAGE_PRESENT == 0 {
+            let new_table = PageTable::new();
+            self.entries[index] = (new_table as *const _ as u64) | TABLE_FLAGS;
+        }
+        let ptr = (self.entries[index] & !0xFFF) as *mut PageTable;
+        unsafe { &mut *ptr }
+    }
 }
 
-fn setup_higher_half_paging(kernel_phys_addr: u64, kernel_size: u64) -> u64 {
-    let pml4 = PageTable::new();
-    let pdpt_ident = PageTable::new();
+/// Maps a 4KiB page into the provided pml4 page table
+fn map_page(pml4: &mut PageTable, virt: u64, phys: u64, flags: u64) {
+    let pml4_idx = ((virt >> 39) & 0x1FF) as usize;
+    let pdpt_idx = ((virt >> 30) & 0x1FF) as usize;
+    let pd_idx = ((virt >> 21) & 0x1FF) as usize;
+    let pt_idx = ((virt >> 12) & 0x1FF) as usize;
 
-    // Identity map the lowest 4 GiB for the bootloader to continue to work
-    pml4.entries[0] = (pdpt_ident as *const _ as u64) | TABLE_FLAGS;
-    for i in 0..4 {
-        let pd_ident = PageTable::new();
-        pdpt_ident.entries[i] = (pd_ident as *const _ as u64) | TABLE_FLAGS;
-        for j in 0..512 {
-            let phys_addr = (i as u64 * 0x4000_0000) + (j as u64 * 0x200000);
-            pd_ident.entries[j] = phys_addr | HUGE_PAGE_FLAGS;
+    let pdpt = pml4.get_or_create(pml4_idx);
+    let pd = pdpt.get_or_create(pdpt_idx);
+    let pt = pd.get_or_create(pd_idx);
+
+    pt.entries[pt_idx] = phys | flags;
+}
+
+fn setup_higher_half_paging(
+    kernel_phys_addr: u64,
+    kernel_size: u64,
+    fb_ptr: *mut u8,
+    fb_size: usize,
+) -> u64 {
+    let pml4 = PageTable::new();
+
+    let mmap = uefi::boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get memory map");
+
+    // Identyty map the necessary UEFI regions
+    for desc in mmap.entries() {
+        match desc.ty {
+            MemoryType::LOADER_CODE
+            | MemoryType::LOADER_DATA
+            | MemoryType::BOOT_SERVICES_CODE
+            | MemoryType::BOOT_SERVICES_DATA
+            | MemoryType::ACPI_RECLAIM
+            | MemoryType::ACPI_NON_VOLATILE
+            | MemoryType::MMIO
+            | MemoryType::RUNTIME_SERVICES_CODE
+            | MemoryType::RUNTIME_SERVICES_DATA => {
+                let phys_start = desc.phys_start;
+                let page_count = desc.page_count;
+
+                for i in 0..page_count {
+                    let addr = phys_start + (i * 0x1000);
+                    map_page(pml4, addr, addr, TABLE_FLAGS);
+                }
+            }
+            _ => {}
         }
     }
 
-    // Map Higher half
-    // Virtual Address: 0xFFFFFFFF80000000
-    // PML4 Index = 511
-    // PDPT Index = 510
-    // PD Index = 0
+    let fb_start = fb_ptr as u64;
+    let fb_pages = (fb_size as u64 + 0xFFF) / 0x1000;
+    for i in 0..fb_pages {
+        let addr = fb_start + (i * 0x1000);
+        map_page(pml4, addr, addr, TABLE_FLAGS);
+    }
 
-    let pdpt_high = PageTable::new();
-    let pd_high = PageTable::new();
+    let kernel_virt_base = 0xFFFFFFFF80000000;
+    let kernel_pages = (kernel_size + 0xFFF) / 0x1000;
 
-    pml4.entries[511] = (pdpt_high as *const _ as u64) | TABLE_FLAGS;
-    pdpt_high.entries[510] = (pd_high as *const _ as u64) | TABLE_FLAGS;
-
-    let num_pt_entries = (kernel_size + 0xFFF) / 0x1000;
-    let num_pts = (num_pt_entries + 511) / 512;
-
-    for i in 0..num_pts {
-        let pt = PageTable::new();
-        pd_high.entries[i as usize] = (pt as *const _ as u64) | TABLE_FLAGS;
-        for j in 0..512 {
-            let page_idx = i * 512 + j;
-            if page_idx < num_pt_entries {
-                let offset = page_idx * 0x1000;
-                pt.entries[j as usize] = (kernel_phys_addr + offset) | TABLE_FLAGS;
-            }
-        }
+    for i in 0..kernel_pages {
+        let offset = i * 0x1000;
+        map_page(
+            pml4,
+            kernel_virt_base + offset,
+            kernel_phys_addr + offset,
+            TABLE_FLAGS,
+        );
     }
 
     pml4 as *const _ as u64
@@ -187,7 +223,7 @@ fn main() -> Status {
         .expect("System table not initialized")
         .as_ptr() as *mut u8;
 
-    let pml4_addr = setup_higher_half_paging(kernel_phys_start, kernel_mem_size);
+    let pml4_addr = setup_higher_half_paging(kernel_phys_start, kernel_mem_size, fb_ptr, fb_size);
 
     // Memory map
     // println!("Getting Memory Map and booting");
@@ -195,7 +231,6 @@ fn main() -> Status {
     let mmap = unsafe { uefi::boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
     unsafe {
-        // let pml4_addr = pml4 as *const _ as u64;
         core::arch::asm!(
           "mov cr3, {}",
           in(reg) pml4_addr,
