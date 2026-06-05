@@ -69,8 +69,8 @@ fn map_page(pml4: &mut PageTable, virt: u64, phys: u64, flags: u64) {
 }
 
 fn setup_higher_half_paging(
-    kernel_phys_addr: u64,
-    kernel_size: u64,
+    elf: &ElfFile,
+    kernel_buffer: &[u8],
     fb_ptr: *mut u8,
     fb_size: usize,
 ) -> u64 {
@@ -109,17 +109,51 @@ fn setup_higher_half_paging(
         map_page(pml4, addr, addr, TABLE_FLAGS);
     }
 
-    let kernel_virt_base = 0xFFFFFFFF80000000;
-    let kernel_pages = (kernel_size + 0xFFF) / 0x1000;
+    for ph in elf.program_iter() {
+        if ph.get_type() == Ok(Type::Load) {
+            let virt_start = ph.virtual_addr();
+            let mem_size = ph.mem_size();
 
-    for i in 0..kernel_pages {
-        let offset = i * 0x1000;
-        map_page(
-            pml4,
-            kernel_virt_base + offset,
-            kernel_phys_addr + offset,
-            TABLE_FLAGS,
-        );
+            if mem_size == 0 {
+                continue;
+            }
+
+            let page_start = virt_start & !0xFFF;
+            let page_end = (virt_start + mem_size + 0xFFF) & !0xFFF;
+            let page_count = ((page_end - page_start) / 0x1000) as usize;
+
+            let phys_prt =
+                boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count)
+                    .expect("Failed to allocate memory pages for ELF segment")
+                    .as_ptr() as u64;
+
+            for i in 0..page_count as u64 {
+                let v_addr = page_start + (i * 0x1000);
+                let p_addr = phys_prt + (i * 0x1000);
+                map_page(pml4, v_addr, p_addr, TABLE_FLAGS);
+            }
+
+            let offset_into_page = virt_start - page_start;
+            let phys_dest = (phys_prt + offset_into_page) as *mut u8;
+            let file_size = ph.file_size() as usize;
+            let file_offset = ph.offset() as usize;
+
+            unsafe {
+                if file_size > 0 {
+                    core::ptr::copy_nonoverlapping(
+                        kernel_buffer[file_offset..file_offset + file_size].as_ptr(),
+                        phys_dest,
+                        file_size,
+                    );
+                }
+
+                if mem_size as usize > file_size {
+                    let bss_start = phys_dest.add(file_size);
+                    let bss_size = (mem_size as usize - file_size);
+                    core::ptr::write_bytes(bss_start, 0, bss_size);
+                }
+            }
+        }
     }
 
     pml4 as *const _ as u64
@@ -128,11 +162,9 @@ fn setup_higher_half_paging(
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
-
     println!("Bootloader initialized");
 
     let mut sfs = boot::get_image_file_system(boot::image_handle()).expect("No SFS");
-
     let mut root = sfs.open_volume().expect("Failed to open sfs");
 
     let mut file_handle = root
@@ -151,55 +183,6 @@ fn main() -> Status {
         .expect("Failed to read kernel");
 
     let elf = ElfFile::new(&kernel_buffer[..]).expect("Invalid ELF");
-
-    let mut min_vaddr = u64::MAX;
-    let mut max_vaddr = 0_u64;
-
-    for ph in elf.program_iter() {
-        if ph.get_type() == Ok(Type::Load) {
-            let start = ph.virtual_addr();
-            let end = start + ph.mem_size();
-            if start < min_vaddr {
-                min_vaddr = start;
-            }
-            if end > max_vaddr {
-                max_vaddr = end;
-            }
-        }
-    }
-
-    let kernel_mem_size = max_vaddr - min_vaddr;
-    let pages_needed = ((kernel_mem_size + 0xFFF) / 0x1000) as usize;
-
-    let kernel_phys_ptr = boot::allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
-        pages_needed,
-    )
-    .expect("Failed to allocate memory pages for kernel")
-    .as_ptr();
-
-    let kernel_phys_start = kernel_phys_ptr as u64;
-
-    for ph in elf.program_iter() {
-        if ph.get_type() == Ok(Type::Load) {
-            let offset = ph.virtual_addr() - min_vaddr;
-            let dest = (kernel_phys_start + offset) as *mut u8;
-            let file_size = ph.file_size() as usize;
-            let mem_size = ph.mem_size() as usize;
-            let file_offset = ph.offset() as usize;
-
-            unsafe {
-                core::ptr::write_bytes(dest, 0, mem_size);
-
-                core::ptr::copy_nonoverlapping(
-                    kernel_buffer[file_offset..file_offset + file_size].as_ptr(),
-                    dest,
-                    file_size,
-                );
-            }
-        }
-    }
     let entry = elf.header.pt2.entry_point();
 
     println!("Getting Framebuffer");
@@ -223,10 +206,10 @@ fn main() -> Status {
         .expect("System table not initialized")
         .as_ptr() as *mut u8;
 
-    let pml4_addr = setup_higher_half_paging(kernel_phys_start, kernel_mem_size, fb_ptr, fb_size);
+    let pml4_addr = setup_higher_half_paging(&elf, &kernel_buffer[..], fb_ptr, fb_size);
 
     // Memory map
-    // println!("Getting Memory Map and booting");
+    println!("Exiting Boot Services and jumping to kernel");
 
     let mmap = unsafe { uefi::boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
