@@ -3,10 +3,13 @@ json-target-spec = true
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
+[env]
+CARGO_UNSTABLE_JSON_TARGET_SPEC = "true"
+
 [build]
 # Path is relative to the .cargo directory
 target = "kernel/x86_64-my-os.json"
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "none"))']
 # Ensures the compiler knows it's an unstable custom target
-rustflags = ["-Z", "unstable-options"]
+# rustflags = ["-Z", "unstable-options"]
