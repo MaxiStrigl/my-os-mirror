@@ -22,9 +22,7 @@ use xmas_elf::{ElfFile, program::Type};
 
 const PAGE_PRESENT: u64 = 1;
 const PAGE_WRITEABLE: u64 = 1 << 1;
-const PAGE_HUGE: u64 = 1 << 7;
 const TABLE_FLAGS: u64 = PAGE_WRITEABLE | PAGE_PRESENT;
-const HUGE_PAGE_FLAGS: u64 = PAGE_HUGE | PAGE_WRITEABLE | PAGE_PRESENT;
 
 #[repr(C, align(4096))]
 pub struct PageTable {
@@ -73,7 +71,7 @@ fn setup_higher_half_paging(
     kernel_buffer: &[u8],
     fb_ptr: *mut u8,
     fb_size: usize,
-) -> u64 {
+) -> (u64, u64) {
     let pml4 = PageTable::new();
 
     let mmap = uefi::boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get memory map");
@@ -88,6 +86,7 @@ fn setup_higher_half_paging(
             | MemoryType::ACPI_RECLAIM
             | MemoryType::ACPI_NON_VOLATILE
             | MemoryType::MMIO
+            | MemoryType::CONVENTIONAL
             | MemoryType::RUNTIME_SERVICES_CODE
             | MemoryType::RUNTIME_SERVICES_DATA => {
                 let phys_start = desc.phys_start;
@@ -156,7 +155,25 @@ fn setup_higher_half_paging(
         }
     }
 
-    pml4 as *const _ as u64
+    // Map stack
+    let stack_pages = 4; //16KiB
+    let stack_phys_ptr =
+        uefi::boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, stack_pages)
+            .expect("Failed to allocate pages for kernel stack")
+            .as_ptr() as u64;
+
+    let stack_virt_start: u64 = 0xFFFF_A000_0000_0000;
+
+    for i in 0..stack_pages as u64 {
+        let v_addr = stack_virt_start + (i * 0x1000);
+        let p_addr = stack_phys_ptr + (i * 0x1000);
+
+        map_page(pml4, v_addr, p_addr, TABLE_FLAGS);
+    }
+
+    let stack_top = stack_virt_start + (stack_pages as u64 * 0x1000);
+
+    (pml4 as *const _ as u64, stack_top)
 }
 
 #[entry]
@@ -201,12 +218,22 @@ fn main() -> Status {
     let fb_ptr = framebuffer.as_mut_ptr();
     let fb_size = framebuffer.size();
 
+    println!("Getting Systemtable and boot_info_ptr");
+
     // System table
     let system_table_ptr = uefi::table::system_table_raw()
         .expect("System table not initialized")
         .as_ptr() as *mut u8;
 
-    let pml4_addr = setup_higher_half_paging(&elf, &kernel_buffer[..], fb_ptr, fb_size);
+    let boot_info_ptr =
+        uefi::boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
+            .expect("Failed to allocate page for BootInfo")
+            .as_ptr() as *mut BootInfo;
+
+    println!("Setup paging");
+
+    let (pml4_addr, stack_top) =
+        setup_higher_half_paging(&elf, &kernel_buffer[..], fb_ptr, fb_size);
 
     // Memory map
     println!("Exiting Boot Services and jumping to kernel");
@@ -214,34 +241,39 @@ fn main() -> Status {
     let mmap = unsafe { uefi::boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
     unsafe {
-        core::arch::asm!(
-          "mov cr3, {}",
-          in(reg) pml4_addr,
-          options(nostack, preserves_flags)
-        )
+        *boot_info_ptr = BootInfo {
+            fb_ptr,
+            fb_size,
+            fb_width,
+            fb_height,
+            fb_stride,
+
+            mmap_ptr: mmap.buffer().as_ptr(),
+            mmap_len: mmap.buffer().len(),
+            mmap_desc_size: mmap.meta().desc_size,
+
+            system_table_ptr,
+        };
     }
 
-    // UEFI Services are gone
-    let mmap_ptr = mmap.buffer().as_ptr();
-    let mmap_len = mmap.buffer().len();
-    let mmap_desc_size = mmap.meta().desc_size;
+    unsafe {
+        core::arch::asm!(
+            // Load new page tables
+          "mov cr3, {pml4}",
 
-    let boot_info = BootInfo {
-        fb_ptr,
-        fb_size,
-        fb_width,
-        fb_height,
-        fb_stride,
+          // Setup new kernel stack
+          "mov rsp, {stack}",
+          "mov rbp, rsp", // Reset the base pointer
 
-        mmap_ptr,
-        mmap_len,
-        mmap_desc_size,
+          "mov rdi, {boot_info}",
 
-        system_table_ptr,
-    };
+          "jmp {entry_point}",
 
-    let kernel_entry: extern "C" fn(&'static BootInfo) -> ! =
-        unsafe { core::mem::transmute(entry) };
-
-    kernel_entry(unsafe { core::mem::transmute(&boot_info) });
+          pml4 = in(reg) pml4_addr,
+          stack = in(reg) stack_top,
+          boot_info = in(reg) boot_info_ptr,
+          entry_point = in(reg) entry,
+          options(noreturn)
+        )
+    }
 }
