@@ -11,6 +11,10 @@ use core::panic::PanicInfo;
 extern "C" fn _start(info: &'static BootInfo) -> ! {
     serial::inti_serial();
 
+    serial_println!("Booting Up");
+
+    panic!("Whoops. Did I turn off the oven?");
+
     let world = "World";
 
     serial_println!("Hello {}", world);
@@ -48,5 +52,11 @@ extern "C" fn _start(info: &'static BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    crate::serial_println!("{}", _info);
+
+    loop {
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
 }
