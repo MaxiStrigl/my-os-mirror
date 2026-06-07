@@ -1,12 +1,20 @@
 #![no_std]
 #![no_main]
 
+mod serial;
+
 use common::BootInfo;
 
 use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 extern "C" fn _start(info: &'static BootInfo) -> ! {
+    serial::inti_serial();
+
+    let world = "World";
+
+    serial_println!("Hello {}", world);
+
     let dummy: u64 = 0;
     let stack_pointer = &dummy as *const _ as u64;
 
