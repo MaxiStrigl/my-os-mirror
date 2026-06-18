@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod gdt;
 mod serial;
 
 use common::BootInfo;
@@ -10,10 +11,9 @@ use core::panic::PanicInfo;
 #[unsafe(no_mangle)]
 extern "C" fn _start(info: &'static BootInfo) -> ! {
     serial::inti_serial();
+    gdt::init();
 
     serial_println!("Booting Up");
-
-    panic!("Whoops. Did I turn off the oven?");
 
     let world = "World";
 
