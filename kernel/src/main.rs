@@ -3,6 +3,7 @@
 
 mod gdt;
 mod serial;
+mod tss;
 
 use common::BootInfo;
 
@@ -13,7 +14,8 @@ extern "C" fn _start(info: &'static BootInfo) -> ! {
     serial::inti_serial();
     gdt::init();
 
-    serial_println!("Booting Up");
+    let tr = gdt::read_task_register();
+    serial_println!("Current TR: {:#x}", tr);
 
     let world = "World";
 
