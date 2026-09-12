@@ -33,6 +33,9 @@ def main():
         f"format=raw,file=fat:rw:{ESP_DIR}",
         "-serial",
         "stdio",
+        # "-d",
+        # "int",
+        # "-no-reboot"
     ]
 
     print("--- LAUNCHING QEMU ---")

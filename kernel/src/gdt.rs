@@ -178,6 +178,10 @@ pub fn init() {
     }
 }
 
+pub fn get_code_selector() -> u16 {
+    GDT.1.code_selector.0
+}
+
 pub fn read_task_register() -> u16 {
     let tr: u16;
     unsafe {

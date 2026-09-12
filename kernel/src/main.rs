@@ -1,7 +1,9 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 
 mod gdt;
+mod interrupts;
 mod serial;
 mod tss;
 
@@ -13,9 +15,11 @@ use core::panic::PanicInfo;
 extern "C" fn _start(info: &'static BootInfo) -> ! {
     serial::inti_serial();
     gdt::init();
+    interrupts::init();
 
-    let tr = gdt::read_task_register();
-    serial_println!("Current TR: {:#x}", tr);
+    unsafe {
+        core::arch::asm!("int 1");
+    };
 
     let world = "World";
 

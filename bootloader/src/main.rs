@@ -156,7 +156,7 @@ fn setup_higher_half_paging(
     }
 
     // Map stack
-    let stack_pages = 4; //16KiB
+    let stack_pages = 16; //64KiB
     let stack_phys_ptr =
         uefi::boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, stack_pages)
             .expect("Failed to allocate pages for kernel stack")
